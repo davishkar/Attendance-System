@@ -1,30 +1,67 @@
 <?php
-session_start();
-$DB_HOST='localhost'; $DB_USER='root'; $DB_PASS=''; $DB_NAME='branch1';
-$conn=new mysqli($DB_HOST,$DB_USER,$DB_PASS,$DB_NAME);
-if($conn->connect_error){ die("DB Error: ".$conn->connect_error); }
+require_once __DIR__ . '/config/auth.php';
+require_once __DIR__ . '/config/database.php';
 
-$today=date('Y-m-d');
-$students=$conn->query("SELECT * FROM students ORDER BY id ASC");
+require_login();
 
-if($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['save_attendance'])){
-    $present=$_POST['present']??[];
-    $bandhu=intval($_POST['bandhu']??0);
-    $bhagini=intval($_POST['bhagini']??0);
-    $total=$bandhu+$bhagini;
-    $prasad=$conn->real_escape_string(trim($_POST['prasad']??''));
-
-    $students->data_seek(0);
-    while($s=$students->fetch_assoc()){
-        $sid=$s['id'];
-        $status=in_array((string)$sid,$present)?'present':'absent';
-        $sql="INSERT INTO attendance (student_id,date,status,bandhu,bhagini,total,prasad)
-              VALUES($sid,'$today','$status',$bandhu,$bhagini,$total,'$prasad')
-              ON DUPLICATE KEY UPDATE 
-              status='$status', bandhu=$bandhu, bhagini=$bhagini, total=$total, prasad='$prasad'";
-        $conn->query($sql);
-    }
-    header("Location: save_attendance.php?success=1");
+if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_POST['save_attendance'])) {
+    header('Location: attendance.php');
     exit();
 }
-?>
+
+$conn = db_for_branch(current_branch_id());
+$date = $_POST['date'] ?? date('Y-m-d');
+
+if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+    $date = date('Y-m-d');
+}
+
+$presentIds = array_map('intval', $_POST['present'] ?? []);
+$presentLookup = array_flip($presentIds);
+$bandhu = max(0, (int) ($_POST['bandhu'] ?? 0));
+$bhagini = max(0, (int) ($_POST['bhagini'] ?? 0));
+$total = $bandhu + $bhagini;
+$prasad = trim($_POST['prasad'] ?? '');
+
+$students = $conn->query('SELECT id FROM students ORDER BY id ASC');
+if (!$students) {
+    die('Error fetching students: ' . $conn->error);
+}
+
+$stmt = $conn->prepare(
+    'INSERT INTO attendance (student_id, date, status, bandhu, bhagini, total, prasad)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+        status = VALUES(status),
+        bandhu = VALUES(bandhu),
+        bhagini = VALUES(bhagini),
+        total = VALUES(total),
+        prasad = VALUES(prasad)'
+);
+
+if (!$stmt) {
+    die('Error preparing attendance save: ' . $conn->error);
+}
+
+$conn->begin_transaction();
+
+try {
+    while ($student = $students->fetch_assoc()) {
+        $studentId = (int) $student['id'];
+        $status = isset($presentLookup[$studentId]) ? 'present' : 'absent';
+
+        $stmt->bind_param('issiiis', $studentId, $date, $status, $bandhu, $bhagini, $total, $prasad);
+
+        if (!$stmt->execute()) {
+            throw new RuntimeException($stmt->error);
+        }
+    }
+
+    $conn->commit();
+} catch (Throwable $e) {
+    $conn->rollback();
+    die('Error saving attendance: ' . $e->getMessage());
+}
+
+header('Location: attendance.php?saved=1&date=' . urlencode($date));
+exit();
