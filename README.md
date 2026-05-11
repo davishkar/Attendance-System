@@ -1,4 +1,4 @@
-# Harimandir Attendance System
+# Harimandir Attendance System 
 
 A simple PHP and MySQL attendance system for managing branch-wise daily attendance, viewing reports, and exporting records as CSV.
 
